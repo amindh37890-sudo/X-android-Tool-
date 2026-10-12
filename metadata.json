@@ -1,0 +1,6 @@
+{
+  "name": "NEXUS X",
+  "description": "Elevated privilege operations engine and manager for Android apps via ADB, Wireless Debugging, and Root.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
