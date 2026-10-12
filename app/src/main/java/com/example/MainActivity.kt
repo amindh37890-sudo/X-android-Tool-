@@ -61,8 +61,16 @@ import com.example.ui.screens.AdbScreen
 import com.example.ui.screens.AppsScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.DeepFeaturesScreen
-import com.example.ui.screens.SecurityScreen
+import com.example.ui.screens.SystemAccessScreen
 import com.example.ui.screens.TerminalScreen
+import com.example.ui.screens.SecurityScreen
+import com.example.ui.components.InteractiveIntroDialog
+import androidx.compose.material.icons.filled.FolderShared
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.flow.collectLatest
 import com.example.ui.theme.NexusBackground
 import com.example.ui.theme.NexusCardBorder
 import com.example.ui.theme.NexusCyan
@@ -95,6 +103,7 @@ fun NexusMainScreen(viewModel: NexusViewModel) {
     val currentLevel by viewModel.privilegeLevel.collectAsStateWithLifecycle()
     val selectedApp by viewModel.selectedApp.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    var showIntroDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.uiEvents.collectLatest { message ->
@@ -116,7 +125,10 @@ fun NexusMainScreen(viewModel: NexusViewModel) {
         contentWindowInsets = WindowInsets.safeDrawing,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            NexusTopAppBar(currentLevel = currentLevel)
+            NexusTopAppBar(
+                currentLevel = currentLevel,
+                onOpenIntro = { showIntroDialog = true }
+            )
         },
         bottomBar = {
             NexusBottomNavBar(
@@ -138,15 +150,23 @@ fun NexusMainScreen(viewModel: NexusViewModel) {
                 NexusTab.APPS -> AppsScreen(viewModel = viewModel)
                 NexusTab.DEEP_FEATURES -> DeepFeaturesScreen(viewModel = viewModel)
                 NexusTab.WIRELESS_ADB -> AdbScreen(viewModel = viewModel)
+                NexusTab.SYSTEM_ACCESS -> SystemAccessScreen()
                 NexusTab.TERMINAL -> TerminalScreen(viewModel = viewModel)
                 NexusTab.SECURITY -> SecurityScreen(viewModel = viewModel)
             }
+        }
+
+        if (showIntroDialog) {
+            InteractiveIntroDialog(onDismiss = { showIntroDialog = false })
         }
     }
 }
 
 @Composable
-private fun NexusTopAppBar(currentLevel: com.example.data.model.PrivilegeLevel) {
+private fun NexusTopAppBar(
+    currentLevel: com.example.data.model.PrivilegeLevel,
+    onOpenIntro: () -> Unit = {}
+) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -197,6 +217,20 @@ private fun NexusTopAppBar(currentLevel: com.example.data.model.PrivilegeLevel) 
                 )
             }
 
+            IconButton(
+                onClick = onOpenIntro,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = "Introduction",
+                    tint = NexusCyan,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
             PrivilegeBadge(level = currentLevel, showPulse = true)
         }
     }
@@ -242,6 +276,15 @@ private fun NexusBottomNavBar(
             label = { Text("100 Deep", fontSize = 9.sp, fontWeight = FontWeight.Bold) },
             colors = navigationItemColors(),
             modifier = Modifier.testTag("nav_tab_deep_features")
+        )
+
+        NavigationBarItem(
+            selected = currentTab == NexusTab.SYSTEM_ACCESS,
+            onClick = { onTabSelected(NexusTab.SYSTEM_ACCESS) },
+            icon = { Icon(Icons.Default.FolderShared, contentDescription = "System") },
+            label = { Text("System", fontSize = 9.sp, fontWeight = FontWeight.Bold) },
+            colors = navigationItemColors(),
+            modifier = Modifier.testTag("nav_tab_system_access")
         )
 
         NavigationBarItem(

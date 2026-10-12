@@ -33,7 +33,9 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardReturn
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
@@ -99,8 +101,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+enum class TerminalSubTab(val labelAr: String, val labelEn: String) {
+    SHELL("طرفية الأوامر", "Terminal Shell"),
+    MEMORY("مراقب الذاكرة", "Memory Monitor")
+}
+
 enum class CommandCategory(val label: String) {
     ALL("All"),
+    MEMORY("Memory & RAM"),
     PACKAGES("Packages (pm)"),
     ACTIVITIES("Activities (am)"),
     SYSTEM("System Info"),
@@ -125,6 +133,7 @@ fun TerminalScreen(
     val persistentHistory by viewModel.persistentCommandHistory.collectAsStateWithLifecycle()
 
     val clipboardManager = LocalClipboardManager.current
+    var activeSubTab by remember { mutableStateOf(TerminalSubTab.SHELL) }
     var commandInput by remember { mutableStateOf("") }
     var scratchInput by remember { mutableStateOf("") }
     var historyIndex by remember { mutableIntStateOf(-1) }
@@ -134,12 +143,21 @@ fun TerminalScreen(
     val categoryPresets = remember {
         mapOf(
             CommandCategory.ALL to listOf(
-                "pm list packages -3",
+                "cat /proc/meminfo",
+                "free -m",
                 "dumpsys battery",
+                "dumpsys meminfo",
                 "getprop ro.build.version.release",
                 "id",
                 "whoami",
                 "cat /proc/version"
+            ),
+            CommandCategory.MEMORY to listOf(
+                "cat /proc/meminfo",
+                "free -m",
+                "dumpsys meminfo",
+                "top -n 1 -m 5",
+                "vmstat"
             ),
             CommandCategory.PACKAGES to listOf(
                 "pm list packages -3",
@@ -190,11 +208,74 @@ fun TerminalScreen(
     ) {
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Top Status & Channel Header
-        CyberCard(
-            backgroundColor = Color(0xFF0A0F17),
-            borderColor = if (isAdbAvailable) NexusCyan.copy(alpha = 0.5f) else NexusCardBorder
+        // Top Sub-Tab Switcher: Shell Terminal vs Memory Monitor
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF080D14), RoundedCornerShape(10.dp))
+                .border(1.dp, NexusCardBorder, RoundedCornerShape(10.dp))
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            TerminalSubTab.values().forEach { tab ->
+                val isSelected = activeSubTab == tab
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isSelected) NexusCyan.copy(alpha = 0.2f) else Color.Transparent)
+                        .border(
+                            1.dp,
+                            if (isSelected) NexusCyan else Color.Transparent,
+                            RoundedCornerShape(8.dp)
+                        )
+                        .clickable { activeSubTab = tab }
+                        .testTag("terminal_tab_${tab.name.lowercase()}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (tab == TerminalSubTab.SHELL) Icons.Default.Terminal else Icons.Default.Memory,
+                            contentDescription = null,
+                            tint = if (isSelected) NexusCyan else NexusTextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = tab.labelAr,
+                            fontSize = 12.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isSelected) NexusCyan else NexusTextSecondary,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (activeSubTab == TerminalSubTab.MEMORY) {
+            MemoryMonitorScreen(
+                viewModel = viewModel,
+                modifier = Modifier.weight(1f),
+                onNavigateToTerminalWithCommand = { cmd ->
+                    activeSubTab = TerminalSubTab.SHELL
+                    submitCommand(cmd)
+                }
+            )
+        } else {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                // Top Status & Channel Header
+                CyberCard(
+                    backgroundColor = Color(0xFF0A0F17),
+                    borderColor = if (isAdbAvailable) NexusCyan.copy(alpha = 0.5f) else NexusCardBorder
+                ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -692,8 +773,10 @@ fun TerminalScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+        }
     }
+}
 
     // Command History Modal Sheet
     if (showHistorySheet) {

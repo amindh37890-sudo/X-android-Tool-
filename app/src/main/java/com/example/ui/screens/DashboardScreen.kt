@@ -89,7 +89,16 @@ fun DashboardScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(4.dp))
+            // 3D Holographic Interactive Engine Core
+            com.example.ui.components.Hologram3DCore(
+                isElevated = isRoot || isAdb,
+                privilegeTitle = currentLevel.title,
+                interactiveRotation = true
+            )
+        }
+
+        item {
             // Hero Status Banner
             CyberCard(
                 borderColor = Color(currentLevel.badgeColorHex),
@@ -275,6 +284,141 @@ fun DashboardScreen(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
+                }
+            }
+        }
+
+        // Real-Time Memory Telemetry & Shell Console Card
+        item {
+            val memorySnapshot by viewModel.memorySnapshot.collectAsStateWithLifecycle()
+            CyberCard(
+                borderColor = NexusCyan.copy(alpha = 0.5f),
+                backgroundColor = Color(0xFF090E16)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(NexusCyan.copy(alpha = 0.15f), RoundedCornerShape(10.dp))
+                                .border(1.dp, NexusCyan, RoundedCornerShape(10.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Memory,
+                                contentDescription = null,
+                                tint = NexusCyan,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
+                        Column {
+                            Text(
+                                text = "مراقب الذاكرة وطرفية الأوامر",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Black,
+                                color = NexusTextPrimary
+                            )
+                            Text(
+                                text = "LIVE RAM & SHELL TELEMETRY",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = NexusCyan,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = if (memorySnapshot.ram.isLowMemory) NexusRed.copy(alpha = 0.2f) else NexusGreen.copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = if (memorySnapshot.ram.isLowMemory) "LOW MEM" else "STABLE",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (memorySnapshot.ram.isLowMemory) NexusRed else NexusGreen,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "استهلاك الرام: ${memorySnapshot.ram.usedMb} / ${memorySnapshot.ram.totalMb} MB",
+                        fontSize = 11.sp,
+                        color = NexusTextSecondary,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "${String.format(java.util.Locale.US, "%.1f", memorySnapshot.ram.usedPercent)}%",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = NexusCyan,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { (memorySnapshot.ram.usedPercent / 100f).coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp),
+                    color = when {
+                        memorySnapshot.ram.usedPercent > 85f -> NexusRed
+                        memorySnapshot.ram.usedPercent > 65f -> NexusAmber
+                        else -> NexusCyan
+                    },
+                    trackColor = Color(0xFF141F2D)
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = { viewModel.selectTab(NexusTab.TERMINAL) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = NexusCyan.copy(alpha = 0.2f),
+                            contentColor = NexusCyan
+                        )
+                    ) {
+                        Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = "فتح الطرفية", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    FilledTonalButton(
+                        onClick = { viewModel.forceGarbageCollection() },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = NexusViolet.copy(alpha = 0.2f),
+                            contentColor = NexusViolet
+                        )
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = "تنظيف الرام GC", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }

@@ -35,6 +35,7 @@ enum class NexusTab {
     APPS,
     DEEP_FEATURES,
     WIRELESS_ADB,
+    SYSTEM_ACCESS,
     TERMINAL,
     SECURITY
 }
@@ -149,6 +150,17 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     private val _isTestingAdb = MutableStateFlow(false)
     val isTestingAdb: StateFlow<Boolean> = _isTestingAdb.asStateFlow()
 
+    // Real-Time Memory Monitor State (مراقب الذاكرة الحي)
+    val memoryMonitorEngine = com.example.data.engine.MemoryMonitorEngine(application)
+    private val _memorySnapshot = MutableStateFlow(com.example.data.engine.MemorySnapshot())
+    val memorySnapshot: StateFlow<com.example.data.engine.MemorySnapshot> = _memorySnapshot.asStateFlow()
+
+    private val _isAutoRefreshMemory = MutableStateFlow(true)
+    val isAutoRefreshMemory: StateFlow<Boolean> = _isAutoRefreshMemory.asStateFlow()
+
+    private val _isOptimizingMemory = MutableStateFlow(false)
+    val isOptimizingMemory: StateFlow<Boolean> = _isOptimizingMemory.asStateFlow()
+
     // Transient UI message / toast
     private val _uiEvents = MutableSharedFlow<String>()
     val uiEvents: SharedFlow<String> = _uiEvents.asSharedFlow()
@@ -156,6 +168,50 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     init {
         runDiagnostics()
         loadInstalledApps()
+        startMemoryMonitoring()
+    }
+
+    private fun startMemoryMonitoring() {
+        viewModelScope.launch {
+            memoryMonitorEngine.monitorFlow(1500L).collect { snapshot ->
+                if (_isAutoRefreshMemory.value) {
+                    _memorySnapshot.value = snapshot
+                }
+            }
+        }
+    }
+
+    fun toggleAutoRefreshMemory() {
+        _isAutoRefreshMemory.value = !_isAutoRefreshMemory.value
+    }
+
+    fun refreshMemorySnapshot() {
+        viewModelScope.launch {
+            _memorySnapshot.value = memoryMonitorEngine.captureSnapshot()
+            _uiEvents.emit("تم تحديث مؤشرات الذاكرة بنجاح")
+        }
+    }
+
+    fun forceGarbageCollection() {
+        viewModelScope.launch {
+            _isOptimizingMemory.value = true
+            val gcResult = memoryMonitorEngine.forceGarbageCollection()
+            _memorySnapshot.value = memoryMonitorEngine.captureSnapshot()
+            _isOptimizingMemory.value = false
+            _uiEvents.emit("✓ تنظيف الذاكرة: تم تحرير ${gcResult.freedMb} MB من كومة التطبيق")
+        }
+    }
+
+    fun trimApplicationMemory() {
+        viewModelScope.launch {
+            val result = memoryMonitorEngine.trimMemory()
+            _memorySnapshot.value = memoryMonitorEngine.captureSnapshot()
+            _uiEvents.emit(result)
+        }
+    }
+
+    suspend fun getFullMemoryReport(): String {
+        return memoryMonitorEngine.generateMemoryReport()
     }
 
     fun runDiagnostics() {
@@ -304,16 +360,25 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             val result = if (_isDirectAdbMode.value) {
                 val port = _adbPort.value.toIntOrNull() ?: 5555
                 val host = _adbHost.value.ifBlank { "127.0.0.1" }
-                privilegeEngine.executeAdbDirect(
+                val adbResult = privilegeEngine.executeAdbDirect(
                     command = trimmed,
                     host = host,
                     port = port,
                     operationName = "ADB Shell: $trimmed"
                 )
+                // If direct ADB did not succeed (no active daemon), automatically fall back to local shell (sh -c)
+                if (!adbResult.isSuccess) {
+                    privilegeEngine.execute(
+                        command = trimmed,
+                        operationName = "Local Shell (sh): $trimmed"
+                    )
+                } else {
+                    adbResult
+                }
             } else {
                 privilegeEngine.execute(
                     command = trimmed,
-                    operationName = "Elevated Shell: $trimmed"
+                    operationName = "Local Shell (sh): $trimmed"
                 )
             }
 
