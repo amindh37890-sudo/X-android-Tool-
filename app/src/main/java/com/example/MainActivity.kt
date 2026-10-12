@@ -150,7 +150,7 @@ fun NexusMainScreen(viewModel: NexusViewModel) {
                 NexusTab.APPS -> AppsScreen(viewModel = viewModel)
                 NexusTab.DEEP_FEATURES -> DeepFeaturesScreen(viewModel = viewModel)
                 NexusTab.WIRELESS_ADB -> AdbScreen(viewModel = viewModel)
-                NexusTab.SYSTEM_ACCESS -> SystemAccessScreen()
+                NexusTab.SYSTEM_ACCESS -> SystemAccessScreen(privilegeEngine = viewModel.privilegeEngine)
                 NexusTab.TERMINAL -> TerminalScreen(viewModel = viewModel)
                 NexusTab.SECURITY -> SecurityScreen(viewModel = viewModel)
             }

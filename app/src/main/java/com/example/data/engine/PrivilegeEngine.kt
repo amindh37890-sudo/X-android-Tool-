@@ -82,6 +82,43 @@ class PrivilegeEngine(
         highestLevel
     }
 
+    fun activateWirelessAdb(port: Int) {
+        _activeAdbPort.value = port
+        _isAdbAvailable.value = true
+        _currentLevel.value = PrivilegeLevel.WIRELESS_ADB
+    }
+
+    suspend fun pairAndActivateAdb(
+        pairPort: Int? = null,
+        pairingCode: String,
+        connectPort: Int? = null
+    ): AdbWirelessManager.PairResult = withContext(Dispatchers.IO) {
+        val result = adbWirelessManager.pairDevice(
+            host = "127.0.0.1",
+            pairPort = pairPort,
+            pairingCode = pairingCode,
+            connectPort = connectPort
+        )
+        if (result.isSuccess) {
+            activateWirelessAdb(result.activePort)
+            try {
+                db.auditLogDao().insertLog(
+                    AuditLogEntity(
+                        packageName = null,
+                        operation = "Wireless ADB Pairing",
+                        command = "adb pair 127.0.0.1:${result.activePort} [PIN: ${result.pairingCode}]",
+                        privilegeLevel = PrivilegeLevel.WIRELESS_ADB.name,
+                        exitCode = 0,
+                        output = result.message,
+                        timestamp = System.currentTimeMillis(),
+                        success = true
+                    )
+                )
+            } catch (_: Exception) {}
+        }
+        result
+    }
+
     private fun testRootPrivilege(): Boolean {
         // Step 1: Check known binary locations
         val paths = arrayOf(

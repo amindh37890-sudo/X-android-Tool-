@@ -11,6 +11,7 @@ import com.example.data.model.ElevatedPreset
 import com.example.data.model.ExecutionResult
 import com.example.data.model.PrivilegeLevel
 import com.example.data.repository.NexusRepository
+import com.example.service.AdbNotificationBridge
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -169,6 +170,33 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         runDiagnostics()
         loadInstalledApps()
         startMemoryMonitoring()
+        observeNotificationEvents()
+    }
+
+    private fun observeNotificationEvents() {
+        viewModelScope.launch {
+            AdbNotificationBridge.pairingEvents.collect { event ->
+                if (event.isSuccess) {
+                    privilegeEngine.activateWirelessAdb(event.port)
+                    _adbPort.value = event.port.toString()
+                    _isDirectAdbMode.value = true
+                    _adbState.value = AdbWirelessManager.AdbConnectionState(
+                        isConnected = true,
+                        port = event.port,
+                        message = event.message
+                    )
+                    _uiEvents.emit(event.message)
+                    runDiagnostics()
+                } else if (event.message == "Disconnected") {
+                    _isDirectAdbMode.value = false
+                    _adbState.value = AdbWirelessManager.AdbConnectionState(
+                        isConnected = false,
+                        message = "Disconnected"
+                    )
+                    runDiagnostics()
+                }
+            }
+        }
     }
 
     private fun startMemoryMonitoring() {
@@ -427,6 +455,62 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
                 testAdbConnection()
             } else {
                 _uiEvents.emit("No active ADB daemon found on common ports.")
+            }
+        }
+    }
+
+    fun triggerPairingNotification() {
+        val port = _adbPort.value.toIntOrNull()
+        AdbNotificationBridge.showPairingNotification(
+            context = getApplication(),
+            statusText = "جاهز لاستقبال رمز الاقتران (PIN)",
+            currentPort = port,
+            isConnected = isAdbAvailable.value
+        )
+    }
+
+    fun pairDeviceWithCode(portStr: String?, code: String) {
+        val trimmedCode = code.trim()
+        if (trimmedCode.isBlank()) return
+
+        viewModelScope.launch {
+            _isTestingAdb.value = true
+            val parsedPort = portStr?.trim()?.toIntOrNull()
+            val result = privilegeEngine.pairAndActivateAdb(
+                pairPort = parsedPort,
+                pairingCode = trimmedCode
+            )
+            _isTestingAdb.value = false
+
+            if (result.isSuccess) {
+                _adbPort.value = result.activePort.toString()
+                _isDirectAdbMode.value = true
+                _adbState.value = AdbWirelessManager.AdbConnectionState(
+                    isConnected = true,
+                    port = result.activePort,
+                    message = result.message
+                )
+                AdbNotificationBridge.showPairingNotification(
+                    context = getApplication(),
+                    statusText = result.message,
+                    currentPort = result.activePort,
+                    isConnected = true
+                )
+                _uiEvents.emit(result.message)
+                runDiagnostics()
+            } else {
+                _adbState.value = AdbWirelessManager.AdbConnectionState(
+                    isConnected = false,
+                    port = result.activePort,
+                    message = result.message
+                )
+                AdbNotificationBridge.showPairingNotification(
+                    context = getApplication(),
+                    statusText = result.message,
+                    currentPort = result.activePort,
+                    isConnected = false
+                )
+                _uiEvents.emit(result.message)
             }
         }
     }

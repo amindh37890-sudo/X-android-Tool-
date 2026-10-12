@@ -1,60 +1,27 @@
 package com.example.ui.screens
 
 import android.Manifest
-import android.content.pm.PackageManager
+import android.content.Intent
 import android.os.Build
+import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Audiotrack
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.VerifiedUser
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,51 +33,67 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
-import com.example.data.manager.AudioRecordTestResult
-import com.example.data.manager.MediaItemInfo
-import com.example.data.manager.StorageSpaceInfo
-import com.example.data.manager.SystemAccessManager
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.engine.PrivilegeEngine
+import com.example.data.manager.*
 import com.example.service.AdbNotificationBridge
 import com.example.ui.components.CyberCard
-import com.example.ui.theme.NexusCardBorder
-import com.example.ui.theme.NexusCyan
-import com.example.ui.theme.NexusGreen
-import com.example.ui.theme.NexusRed
-import com.example.ui.theme.NexusSurface
-import com.example.ui.theme.NexusSurfaceVariant
-import com.example.ui.theme.NexusTextPrimary
-import com.example.ui.theme.NexusTextSecondary
-import com.example.ui.theme.NexusViolet
+import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * Full System Access & Media Forensics Screen:
+ * Full System Access, Data/Obb Explorer, File Editor & Media Forensics Screen:
  * - Live Storage Space & Filesystem Inspector
+ * - Deep browsing of /system, /data, /storage/emulated/0/Android/data, /storage/emulated/0/Android/obb
+ * - Read, Edit, Write, Create Files & Folders
  * - System Photos & Gallery Media Telemetry
  * - Audio Telemetry & Real-time Microphone Sample Probe
  * - Notification Center & Wireless Debugging Direct Notification Trigger
  */
 @Composable
 fun SystemAccessScreen(
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    privilegeEngine: PrivilegeEngine? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val accessManager = remember { SystemAccessManager(context) }
+    val fileManager = remember { SystemFileManager(privilegeEngine) }
+    val notificationFeedback by AdbNotificationBridge.lastNotificationFeedback.collectAsStateWithLifecycle()
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
 
     // State holders
     var storageInfo by remember { mutableStateOf<StorageSpaceInfo?>(null) }
-    var fileList by remember { mutableStateOf<List<File>>(emptyList()) }
     var currentDirPath by remember { mutableStateOf("/system") }
+    var fileNodes by remember { mutableStateOf<List<SystemNodeInfo>>(emptyList()) }
+    var isBrowsingFiles by remember { mutableStateOf(false) }
+
+    // Dialog & Editor states
+    var viewingNode by remember { mutableStateOf<SystemNodeInfo?>(null) }
+    var editorContent by remember { mutableStateOf("") }
+    var isReadingFile by remember { mutableStateOf(false) }
+    var showCreateDialog by remember { mutableStateOf(false) }
+    var createModeFolder by remember { mutableStateOf(false) } // true for folder, false for file
+    var newTargetName by remember { mutableStateOf("") }
+    var initialFileBody by remember { mutableStateOf("") }
+    var nodeToDelete by remember { mutableStateOf<SystemNodeInfo?>(null) }
+
+    // Media & Telemetry states
     var imagesList by remember { mutableStateOf<List<MediaItemInfo>>(emptyList()) }
     var audioList by remember { mutableStateOf<List<MediaItemInfo>>(emptyList()) }
     var audioTestResult by remember { mutableStateOf<AudioRecordTestResult?>(null) }
     var isTestingAudio by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
+
+    fun refreshCurrentDirectory() {
+        scope.launch {
+            isBrowsingFiles = true
+            fileNodes = fileManager.listNodes(currentDirPath)
+            isBrowsingFiles = false
+        }
+    }
 
     // Permissions Request
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -138,10 +121,22 @@ fun SystemAccessScreen(
     LaunchedEffect(Unit) {
         isLoading = true
         storageInfo = accessManager.getStorageOverview()
-        fileList = accessManager.listSystemFiles(currentDirPath)
+        refreshCurrentDirectory()
         imagesList = accessManager.queryImages()
         audioList = accessManager.queryAudioFiles()
         isLoading = false
+    }
+
+    // Quick shortcuts including /system, /data, Android/data, Android/obb
+    val quickLocations = remember {
+        listOf(
+            "نظام /system" to "/system",
+            "بيانات /data" to "/data",
+            "بيانات التطبيقات Android/data" to "/storage/emulated/0/Android/data",
+            "ملفات الألعاب Android/obb" to "/storage/emulated/0/Android/obb",
+            "الذاكرة /sdcard" to "/sdcard",
+            "العمليات /proc" to "/proc"
+        )
     }
 
     Column(
@@ -166,7 +161,7 @@ fun SystemAccessScreen(
             Tab(
                 selected = selectedTabIndex == 0,
                 onClick = { selectedTabIndex = 0 },
-                text = { Text("الملفات والنظام", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                text = { Text("النظام والملفات", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
                 icon = { Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp)) }
             )
             Tab(
@@ -196,17 +191,17 @@ fun SystemAccessScreen(
 
         when (selectedTabIndex) {
             0 -> {
-                // Filesystem & Storage Tab
+                // Filesystem, data & obb Browser & Editor Tab
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     item {
                         storageInfo?.let { s ->
                             CyberCard(borderColor = NexusCyan) {
                                 Text(
                                     text = "سعة التخزين والنظام الفعلي",
-                                    fontSize = 14.sp,
+                                    fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = NexusCyan,
                                     fontFamily = FontFamily.Monospace
@@ -240,87 +235,287 @@ fun SystemAccessScreen(
                         }
                     }
 
+                    // Directory Location Bar + Navigation Controls
                     item {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "مستعرض مجلدات النظام: $currentDirPath",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = NexusTextSecondary,
-                                fontFamily = FontFamily.Monospace
-                            )
-                            IconButton(onClick = {
-                                scope.launch {
-                                    fileList = accessManager.listSystemFiles(currentDirPath)
-                                }
-                            }) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = NexusCyan)
-                            }
-                        }
-                    }
-
-                    // Directory buttons
-                    item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf("/system", "/data", "/proc", "/sdcard").forEach { path ->
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (currentDirPath == path) NexusCyan.copy(alpha = 0.2f) else NexusSurfaceVariant,
-                                    border = BorderStroke(0.5.dp, if (currentDirPath == path) NexusCyan else NexusCardBorder),
-                                    modifier = Modifier.clickable {
-                                        currentDirPath = path
-                                        scope.launch {
-                                            fileList = accessManager.listSystemFiles(path)
-                                        }
-                                    }
-                                ) {
-                                    Text(
-                                        text = path,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                        fontSize = 11.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = if (currentDirPath == path) NexusCyan else NexusTextPrimary
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    items(fileList) { file ->
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = NexusSurfaceVariant,
-                            border = BorderStroke(0.5.dp, NexusCardBorder),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
+                        CyberCard(borderColor = NexusViolet) {
                             Row(
-                                modifier = Modifier.padding(10.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(
-                                    imageVector = if (file.isDirectory) Icons.Default.Folder else Icons.Default.Security,
-                                    contentDescription = null,
-                                    tint = if (file.isDirectory) NexusViolet else NexusTextSecondary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = file.name,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = NexusTextPrimary,
-                                        fontFamily = FontFamily.Monospace
-                                    )
-                                    Text(
-                                        text = "الحجم: ${file.length()} B | تصريح: ${if (file.canRead()) "قراءة" else ""}${if (file.canWrite()) "،كتابة" else ""}",
+                                        text = "المسار الحالي:",
                                         fontSize = 10.sp,
                                         color = NexusTextSecondary
                                     )
+                                    Text(
+                                        text = currentDirPath,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = NexusCyan,
+                                        fontFamily = FontFamily.Monospace,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    // Parent directory button
+                                    IconButton(
+                                        onClick = {
+                                            val parent = File(currentDirPath).parent ?: "/"
+                                            currentDirPath = parent
+                                            refreshCurrentDirectory()
+                                        },
+                                        enabled = currentDirPath != "/"
+                                    ) {
+                                        Icon(Icons.Default.ArrowUpward, contentDescription = "Up", tint = if (currentDirPath != "/") NexusCyan else NexusTextSecondary)
+                                    }
+
+                                    // Refresh button
+                                    IconButton(onClick = { refreshCurrentDirectory() }) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = NexusCyan)
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Action buttons: Create Folder / Create File
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        createModeFolder = true
+                                        newTargetName = ""
+                                        showCreateDialog = true
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = NexusViolet.copy(alpha = 0.25f),
+                                        contentColor = NexusViolet
+                                    ),
+                                    border = BorderStroke(0.5.dp, NexusViolet),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("+ مجلد جديد", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        createModeFolder = false
+                                        newTargetName = ""
+                                        initialFileBody = ""
+                                        showCreateDialog = true
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = NexusGreen.copy(alpha = 0.25f),
+                                        contentColor = NexusGreen
+                                    ),
+                                    border = BorderStroke(0.5.dp, NexusGreen),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(Icons.Default.NoteAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("+ ملف جديد", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
+                    // Directory shortcuts row
+                    item {
+                        Column {
+                            Text(
+                                text = "اختصارات الوصول السريع للمسارات الحساسة (data / obb / system):",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = NexusTextSecondary
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                quickLocations.forEach { (label, path) ->
+                                    val isSelected = currentDirPath == path
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isSelected) NexusCyan.copy(alpha = 0.2f) else NexusSurfaceVariant,
+                                        border = BorderStroke(0.5.dp, if (isSelected) NexusCyan else NexusCardBorder),
+                                        modifier = Modifier.clickable {
+                                            currentDirPath = path
+                                            refreshCurrentDirectory()
+                                        }
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            fontSize = 11.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = if (isSelected) NexusCyan else NexusTextPrimary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (isBrowsingFiles) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(color = NexusCyan, modifier = Modifier.size(32.dp))
+                            }
+                        }
+                    } else if (fileNodes.isEmpty()) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = NexusSurfaceVariant,
+                                border = BorderStroke(0.5.dp, NexusCardBorder),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Icon(Icons.Default.FolderOpen, contentDescription = null, tint = NexusTextSecondary, modifier = Modifier.size(36.dp))
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = "المجلد فارغ أو يتطلب امتيازات ADB / Root للوصول الكامل",
+                                        fontSize = 12.sp,
+                                        color = NexusTextSecondary
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "يمكنك إنشاء مجلد أو ملف جديد داخل هذا المسار باستخدام الأزرار أعلاه.",
+                                        fontSize = 11.sp,
+                                        color = NexusCyan
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "العناصر الموجودة (${fileNodes.size}):",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NexusTextSecondary
+                                )
+                                Text(
+                                    text = "اضغط للمعاينة والتعديل",
+                                    fontSize = 10.sp,
+                                    color = NexusCyan
+                                )
+                            }
+                        }
+
+                        items(fileNodes) { node ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = NexusSurfaceVariant,
+                                border = BorderStroke(0.5.dp, if (node.isDirectory) NexusViolet.copy(alpha = 0.5f) else NexusCardBorder),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        if (node.isDirectory) {
+                                            currentDirPath = node.path
+                                            refreshCurrentDirectory()
+                                        } else {
+                                            // View / Edit file
+                                            viewingNode = node
+                                            isReadingFile = true
+                                            scope.launch {
+                                                val res = fileManager.readFileContent(node.path)
+                                                editorContent = res.second
+                                                isReadingFile = false
+                                            }
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = if (node.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile,
+                                        contentDescription = null,
+                                        tint = if (node.isDirectory) NexusViolet else NexusCyan,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = node.name,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = NexusTextPrimary,
+                                            fontFamily = FontFamily.Monospace,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = if (node.isDirectory) "مجلد | صلاحيات: ${node.permissionsStr}"
+                                            else "حجم: ${node.size} B | ${if (node.canWrite) "قابل للكتابة" else "للقراءة"} | ${node.permissionsStr}",
+                                            fontSize = 10.sp,
+                                            color = NexusTextSecondary
+                                        )
+                                    }
+
+                                    // Action buttons for node
+                                    IconButton(
+                                        onClick = {
+                                            if (!node.isDirectory) {
+                                                viewingNode = node
+                                                isReadingFile = true
+                                                scope.launch {
+                                                    val res = fileManager.readFileContent(node.path)
+                                                    editorContent = res.second
+                                                    isReadingFile = false
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (node.isDirectory) Icons.Default.ChevronRight else Icons.Default.Edit,
+                                            contentDescription = "Edit or open",
+                                            tint = NexusCyan,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = { nodeToDelete = node },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.DeleteOutline,
+                                            contentDescription = "Delete",
+                                            tint = NexusRed,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -356,13 +551,12 @@ fun SystemAccessScreen(
                                 }
                                 Button(
                                     onClick = { checkAndRequestPermissions() },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = NexusViolet,
-                                        contentColor = Color.White
-                                    ),
+                                    colors = ButtonDefaults.buttonColors(containerColor = NexusViolet),
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
-                                    Text("تحديث الصلاحيات", fontSize = 11.sp)
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("تحديث", fontSize = 11.sp)
                                 }
                             }
                         }
@@ -370,25 +564,21 @@ fun SystemAccessScreen(
 
                     if (imagesList.isEmpty()) {
                         item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(180.dp),
-                                contentAlignment = Alignment.Center
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = NexusSurfaceVariant,
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(Icons.Default.Image, contentDescription = null, tint = NexusTextSecondary, modifier = Modifier.size(40.dp))
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        text = "لا توجد صور أو صلاحية الوسائط بانتظار الموافقة",
-                                        color = NexusTextSecondary,
-                                        fontSize = 12.sp
-                                    )
-                                }
+                                Text(
+                                    text = "لم يتم العثور على صور أو يلزم منح تصريح قراءة الوسائط من الزر أعلاه.",
+                                    modifier = Modifier.padding(16.dp),
+                                    fontSize = 12.sp,
+                                    color = NexusTextSecondary
+                                )
                             }
                         }
                     } else {
-                        items(imagesList) { item ->
+                        items(imagesList) { img ->
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
                                 color = NexusSurfaceVariant,
@@ -399,22 +589,11 @@ fun SystemAccessScreen(
                                     modifier = Modifier.padding(10.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.Default.Image, contentDescription = null, tint = NexusCyan, modifier = Modifier.size(24.dp))
+                                    Icon(Icons.Default.Image, contentDescription = null, tint = NexusViolet, modifier = Modifier.size(24.dp))
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = item.name,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = NexusTextPrimary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "النوع: ${item.mimeType ?: "صورة"} | الحجم: ${item.sizeBytes / 1024} KB",
-                                            fontSize = 10.sp,
-                                            color = NexusTextSecondary
-                                        )
+                                        Text(text = img.name, fontSize = 12.sp, color = NexusTextPrimary, fontWeight = FontWeight.Bold, maxLines = 1)
+                                        Text(text = "الحجم: ${img.sizeBytes / 1024} KB | النوع: ${img.mimeType}", fontSize = 10.sp, color = NexusTextSecondary)
                                     }
                                 }
                             }
@@ -432,14 +611,14 @@ fun SystemAccessScreen(
                     item {
                         CyberCard(borderColor = NexusGreen) {
                             Text(
-                                text = "فحص عتاد ومستشعرات الصوت الحية",
+                                text = "عتاد وتسجيل الصوت الحي",
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = NexusGreen
                             )
-                            Spacer(modifier = Modifier.height(6.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "اختبار عتاد الميكروفون المباشر ومعايرة قنوات PCM ومستوى التقاط الإشارة الحقيقية.",
+                                text = "اختبار ميكروفون النظام وقياس سعة الصوت الحقيقية (RMS Amplitude)",
                                 fontSize = 11.sp,
                                 color = NexusTextSecondary
                             )
@@ -456,87 +635,86 @@ fun SystemAccessScreen(
                                 enabled = !isTestingAudio,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .testTag("test_audio_hardware_btn"),
+                                    .testTag("test_audio_record_btn"),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = NexusGreen,
-                                    contentColor = Color(0xFF003314)
+                                    contentColor = Color.Black
                                 ),
                                 shape = RoundedCornerShape(8.dp)
                             ) {
                                 if (isTestingAudio) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(14.dp),
-                                        color = Color(0xFF003314),
-                                        strokeWidth = 2.dp
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("جاري الفحص المباشر...", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.Black)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("جاري التقاط عينة صوتية...", fontSize = 12.sp)
                                 } else {
                                     Icon(Icons.Default.Mic, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("بدء اختبار عتاد الصوت المباشر", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("بدء فحص الميكروفون المباشر (1 ثانية)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
-                        }
-                    }
 
-                    audioTestResult?.let { res ->
-                        item {
-                            CyberCard(
-                                borderColor = if (res.isHardwareAvailable) NexusGreen else NexusRed
-                            ) {
-                                Text(
-                                    text = "نتائج فحص عتاد الصوت",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (res.isHardwareAvailable) NexusGreen else NexusRed
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(text = res.message, fontSize = 11.sp, color = NexusTextPrimary)
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text("معدل التردد: ${res.sampleRate} Hz", fontSize = 10.sp, color = NexusTextSecondary)
-                                Text("القنوات: ${res.channelConfig}", fontSize = 10.sp, color = NexusTextSecondary)
-                                Text("الذروة الحية: ${res.peakAmplitude}", fontSize = 10.sp, color = NexusCyan)
+                            audioTestResult?.let { res ->
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (res.isHardwareAvailable) Color(0xFF00221A) else Color(0xFF2E0A10),
+                                    border = BorderStroke(0.5.dp, if (res.isHardwareAvailable) NexusGreen else NexusRed),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp)) {
+                                        Text(text = res.message, fontSize = 12.sp, color = if (res.isHardwareAvailable) NexusGreen else NexusRed, fontWeight = FontWeight.Bold)
+                                        if (res.isHardwareAvailable) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(text = "أقصى سعة ملتقطة (Peak): ${res.peakAmplitude} | التنسيق: ${res.channelConfig}", fontSize = 11.sp, color = NexusTextSecondary)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
                     item {
                         Text(
-                            text = "ملفات الصوت المسجلة بالنظام (${audioList.size})",
+                            text = "ملفات الصوت المسجلة بالنظام (${audioList.size}):",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = NexusTextSecondary
                         )
                     }
 
-                    items(audioList) { item ->
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = NexusSurfaceVariant,
-                            border = BorderStroke(0.5.dp, NexusCardBorder),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(10.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                    if (audioList.isEmpty()) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = NexusSurfaceVariant,
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Icon(Icons.Default.Audiotrack, contentDescription = null, tint = NexusGreen, modifier = Modifier.size(20.dp))
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = item.name,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = NexusTextPrimary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = "النوع: ${item.mimeType ?: "صوت"} | الحجم: ${item.sizeBytes / 1024} KB",
-                                        fontSize = 10.sp,
-                                        color = NexusTextSecondary
-                                    )
+                                Text(
+                                    text = "لا توجد ملفات صوتية مسجلة أو لم يتم إعطاء التصريح بعد.",
+                                    modifier = Modifier.padding(14.dp),
+                                    fontSize = 11.sp,
+                                    color = NexusTextSecondary
+                                )
+                            }
+                        }
+                    } else {
+                        items(audioList) { aud ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = NexusSurfaceVariant,
+                                border = BorderStroke(0.5.dp, NexusCardBorder),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.Audiotrack, contentDescription = null, tint = NexusGreen, modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(text = aud.name, fontSize = 12.sp, color = NexusTextPrimary, fontWeight = FontWeight.Bold, maxLines = 1)
+                                        Text(text = "الحجم: ${aud.sizeBytes / 1024} KB | النوع: ${aud.mimeType}", fontSize = 10.sp, color = NexusTextSecondary)
+                                    }
                                 }
                             }
                         }
@@ -545,32 +723,24 @@ fun SystemAccessScreen(
             }
 
             3 -> {
-                // Interactive Notification & Pairing Tab
+                // Notifications & Quick PIN Input Tab
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     item {
                         CyberCard(borderColor = NexusCyan) {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(Icons.Default.NotificationsActive, contentDescription = null, tint = NexusCyan, modifier = Modifier.size(32.dp))
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
-                                    Text(
-                                        text = "إشعار الاقتران وتصحيح الأخطاء التفاعلي",
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = NexusCyan
-                                    )
-                                    Text(
-                                        text = "يسجل الرمز مباشرة داخل الإشعار وينفذ الأوامر",
-                                        fontSize = 11.sp,
-                                        color = NexusTextSecondary
-                                    )
-                                }
+                                Icon(Icons.Default.NotificationsActive, contentDescription = null, tint = NexusCyan, modifier = Modifier.size(22.dp))
+                                Text(
+                                    text = "إشعار الاقتران التفاعلي التلقائي",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NexusCyan
+                                )
                             }
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
@@ -581,27 +751,76 @@ fun SystemAccessScreen(
                             )
                             Spacer(modifier = Modifier.height(14.dp))
 
-                            Button(
-                                onClick = {
-                                    AdbNotificationBridge.showPairingNotification(
-                                        context = context,
-                                        statusText = "جاهز لاستقبال رمز الاقتران (PIN)",
-                                        currentPort = 5555,
-                                        isConnected = false
-                                    )
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("launch_interactive_notification_btn"),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = NexusCyan,
-                                    contentColor = Color(0xFF001F28)
-                                ),
-                                shape = RoundedCornerShape(8.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("إظهار إشعار الإقران التفاعلي الآن ⚡", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Button(
+                                    onClick = {
+                                        AdbNotificationBridge.showPairingNotification(
+                                            context = context,
+                                            statusText = "جاهز لاستقبال رمز الاقتران (PIN)",
+                                            currentPort = 5555,
+                                            isConnected = false
+                                        )
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("launch_interactive_notification_btn"),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = NexusCyan,
+                                        contentColor = Color(0xFF001F28)
+                                    ),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("إظهار الإشعار التفاعلي ⚡", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        try {
+                                            context.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).apply {
+                                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                            })
+                                        } catch (_: Exception) {
+                                            try {
+                                                context.startActivity(Intent(Settings.ACTION_SETTINGS).apply {
+                                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                                })
+                                            } catch (_: Exception) {}
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = NexusViolet,
+                                        contentColor = Color.White
+                                    ),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("خيارات المطور ⚙️", fontSize = 11.sp)
+                                }
+                            }
+
+                            notificationFeedback?.let { fb ->
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFF001E18),
+                                    border = BorderStroke(0.5.dp, NexusGreen),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = NexusGreen, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(text = fb, fontSize = 11.sp, color = NexusGreen)
+                                    }
+                                }
                             }
                         }
                     }
@@ -616,7 +835,7 @@ fun SystemAccessScreen(
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = "• الاقتران اللاسلكي يعمل على منفذ الشل المحلي بدون كمبيوتر.\n• أي تطبيق تختاره يتم منحه صلاحيات عليا حقيقية فوق قيود أندرويد.\n• الميزات الـ 100 العميقة ترتبط مباشرة بالنظام وتعمل بشكل حي ومؤكد.\n• حفظ سجل الأمان ومراجعة الأوامر المنفذة لحماية الجهاز من التلف.",
+                                text = "• الاقتران اللاسلكي يعمل على منفذ الشل المحلي بدون كمبيوتر.\n• أي تطبيق تختاره يتم منحه صلاحيات عليا حقيقية فوق قيود أندرويد.\n• إمكانية الوصول والتعديل على مجلدات /data و /obb و /system وإنشاء الملفات وحفظها.\n• حفظ سجل الأمان ومراجعة الأوامر المنفذة لحماية الجهاز من التلف.",
                                 fontSize = 11.sp,
                                 color = NexusTextSecondary,
                                 lineHeight = 18.sp
@@ -626,5 +845,261 @@ fun SystemAccessScreen(
                 }
             }
         }
+    }
+
+    // Modal Sheet / Dialog: View & Edit File Content
+    viewingNode?.let { node ->
+        AlertDialog(
+            onDismissRequest = { viewingNode = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.EditNote, contentDescription = null, tint = NexusCyan)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "محرر وعارض الملف: ${node.name}",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = NexusCyan,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "المسار: ${node.path}",
+                        fontSize = 10.sp,
+                        color = NexusTextSecondary,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    if (isReadingFile) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(140.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = NexusCyan)
+                        }
+                    } else {
+                        OutlinedTextField(
+                            value = editorContent,
+                            onValueChange = { editorContent = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(260.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NexusCyan,
+                                unfocusedBorderColor = NexusCardBorder,
+                                focusedTextColor = NexusTextPrimary,
+                                unfocusedTextColor = NexusTextPrimary
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp
+                            )
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val opRes = fileManager.writeFileContent(node.path, editorContent)
+                            when (opRes) {
+                                is FileOpResult.Success -> {
+                                    Toast.makeText(context, opRes.message, Toast.LENGTH_SHORT).show()
+                                    viewingNode = null
+                                    refreshCurrentDirectory()
+                                }
+                                is FileOpResult.Error -> {
+                                    Toast.makeText(context, opRes.message, Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = NexusCyan, contentColor = Color(0xFF001F28)),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("حفظ وتعديل الملف", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewingNode = null }) {
+                    Text("إغلاق", color = NexusTextSecondary, fontSize = 11.sp)
+                }
+            },
+            containerColor = NexusSurface,
+            shape = RoundedCornerShape(12.dp)
+        )
+    }
+
+    // Modal Dialog: Create new Folder or File
+    if (showCreateDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = if (createModeFolder) Icons.Default.CreateNewFolder else Icons.Default.NoteAdd,
+                        contentDescription = null,
+                        tint = if (createModeFolder) NexusViolet else NexusGreen
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (createModeFolder) "إنشاء مجلد جديد" else "إنشاء ملف جديد",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (createModeFolder) NexusViolet else NexusGreen
+                    )
+                }
+            },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "الموقع الحالي: $currentDirPath",
+                        fontSize = 10.sp,
+                        color = NexusTextSecondary,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = newTargetName,
+                        onValueChange = { newTargetName = it },
+                        label = { Text(if (createModeFolder) "اسم المجلد (مثال: new_folder)" else "اسم الملف (مثال: config.txt)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = if (createModeFolder) NexusViolet else NexusGreen,
+                            unfocusedBorderColor = NexusCardBorder,
+                            focusedTextColor = NexusTextPrimary,
+                            unfocusedTextColor = NexusTextPrimary
+                        ),
+                        singleLine = true,
+                        shape = RoundedCornerShape(8.dp)
+                    )
+
+                    if (!createModeFolder) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = initialFileBody,
+                            onValueChange = { initialFileBody = it },
+                            label = { Text("المحتوى المبدئي (اختياري)") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(120.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NexusGreen,
+                                unfocusedBorderColor = NexusCardBorder,
+                                focusedTextColor = NexusTextPrimary,
+                                unfocusedTextColor = NexusTextPrimary
+                            ),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = newTargetName.trim()
+                        if (name.isEmpty()) {
+                            Toast.makeText(context, "يرجى كتابة الاسم", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+                        scope.launch {
+                            val res = if (createModeFolder) {
+                                fileManager.createDirectory(currentDirPath, name)
+                            } else {
+                                fileManager.createNewFile(currentDirPath, name, initialFileBody)
+                            }
+
+                            when (res) {
+                                is FileOpResult.Success -> {
+                                    Toast.makeText(context, res.message, Toast.LENGTH_SHORT).show()
+                                    showCreateDialog = false
+                                    refreshCurrentDirectory()
+                                }
+                                is FileOpResult.Error -> {
+                                    Toast.makeText(context, res.message, Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (createModeFolder) NexusViolet else NexusGreen,
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text("إنشاء الآن", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreateDialog = false }) {
+                    Text("إلغاء", color = NexusTextSecondary, fontSize = 11.sp)
+                }
+            },
+            containerColor = NexusSurface,
+            shape = RoundedCornerShape(12.dp)
+        )
+    }
+
+    // Delete Confirmation Dialog
+    nodeToDelete?.let { node ->
+        AlertDialog(
+            onDismissRequest = { nodeToDelete = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Warning, contentDescription = null, tint = NexusRed)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("تأكيد الحذف", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = NexusRed)
+                }
+            },
+            text = {
+                Text(
+                    text = "هل أنت متأكد من حذف ${if (node.isDirectory) "المجلد ومحتوياته" else "الملف"}:\n${node.path}؟",
+                    fontSize = 11.sp,
+                    color = NexusTextPrimary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val res = fileManager.deleteNode(node.path, node.isDirectory)
+                            when (res) {
+                                is FileOpResult.Success -> {
+                                    Toast.makeText(context, res.message, Toast.LENGTH_SHORT).show()
+                                    nodeToDelete = null
+                                    refreshCurrentDirectory()
+                                }
+                                is FileOpResult.Error -> {
+                                    Toast.makeText(context, res.message, Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = NexusRed, contentColor = Color.White),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text("حذف نهائي", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { nodeToDelete = null }) {
+                    Text("إلغاء", color = NexusTextSecondary, fontSize = 11.sp)
+                }
+            },
+            containerColor = NexusSurface,
+            shape = RoundedCornerShape(12.dp)
+        )
     }
 }

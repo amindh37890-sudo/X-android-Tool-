@@ -21,11 +21,16 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ElectricalServices
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Wifi
+import android.content.Intent
+import android.provider.Settings
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -76,6 +81,7 @@ fun AdbScreen(
     var pairCode by remember { mutableStateOf("") }
     var pairPort by remember { mutableStateOf("") }
     var isPairing by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     LazyColumn(
         modifier = modifier
@@ -238,15 +244,104 @@ fun AdbScreen(
         // Pairing Assistant
         item {
             Text(
-                text = "WIRELESS DEBUGGING PAIRING (ANDROID 11+)",
+                text = "اقتران تصحيح الأخطاء اللاسلكي (WIRELESS ADB PAIRING)",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
-                color = NexusTextSecondary,
+                color = NexusCyan,
                 letterSpacing = 1.sp
             )
             Spacer(modifier = Modifier.height(8.dp))
 
-            CyberCard {
+            CyberCard(borderColor = NexusCyan) {
+                // Automatic Notification Action Banner
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFF002230),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                Icons.Default.NotificationsActive,
+                                contentDescription = null,
+                                tint = NexusCyan,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "الإشعار التفاعلي التلقائي (تسجيل فوري)",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = NexusCyan
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "اضغط الزر بالأسفل ليظهر إشعار دائم أعلى الشاشة، يمكنك إدخال رمز الـ PIN المكون من 6 أرقام مباشرة داخل الإشعار دون الحاجة للتبديل بين التطبيقات، ويتصل فوراً فوق النظام كاملاً!",
+                            fontSize = 11.sp,
+                            color = NexusTextSecondary,
+                            lineHeight = 16.sp
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    viewModel.triggerPairingNotification()
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("launch_pairing_notification_btn"),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = NexusCyan,
+                                    contentColor = Color(0xFF001F28)
+                                ),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("إظهار الإشعار التلقائي 🔔", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            FilledTonalButton(
+                                onClick = {
+                                    try {
+                                        context.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).apply {
+                                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                        })
+                                    } catch (_: Exception) {
+                                        try {
+                                            context.startActivity(Intent(Settings.ACTION_SETTINGS).apply {
+                                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                            })
+                                        } catch (_: Exception) {}
+                                    }
+                                },
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("خيارات المطور ⚙️", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = "أو أدخل بيانات الإقران يدوياً هنا:",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NexusTextPrimary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -254,7 +349,7 @@ fun AdbScreen(
                     OutlinedTextField(
                         value = pairPort,
                         onValueChange = { pairPort = it },
-                        label = { Text("Pairing Port (e.g. 38475)", fontSize = 11.sp) },
+                        label = { Text("منفذ الإقران (اختياري/تلقائي)", fontSize = 11.sp) },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
@@ -270,7 +365,7 @@ fun AdbScreen(
                     OutlinedTextField(
                         value = pairCode,
                         onValueChange = { pairCode = it },
-                        label = { Text("6-Digit PIN", fontSize = 11.sp) },
+                        label = { Text("رمز PIN (6 أرقام)", fontSize = 11.sp) },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
@@ -288,13 +383,13 @@ fun AdbScreen(
 
                 Button(
                     onClick = {
-                        if (pairPort.isNotBlank() && pairCode.isNotBlank()) {
+                        if (pairCode.isNotBlank()) {
                             isPairing = true
-                            viewModel.setAdbPort(pairPort)
-                            viewModel.testAdbConnection()
+                            viewModel.pairDeviceWithCode(pairPort.ifBlank { null }, pairCode)
                             isPairing = false
                         }
                     },
+                    enabled = pairCode.isNotBlank() && !isPairing && !isTesting,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("pair_wireless_adb_btn"),
@@ -304,9 +399,19 @@ fun AdbScreen(
                     ),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("PAIR & ACTIVATE BRIDGE", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    if (isPairing || isTesting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("جاري الاقتران وتأكيد الاتصال...", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    } else {
+                        Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("اقتران وتفعيل الجسر اللاسلكي ⚡", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
