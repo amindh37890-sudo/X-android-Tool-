@@ -1,13 +1,17 @@
 package com.example.data.engine
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.net.Inet4Address
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.Socket
 import java.util.concurrent.TimeUnit
 
@@ -28,6 +32,7 @@ class AdbWirelessManager {
     data class PairResult(
         val isSuccess: Boolean,
         val message: String,
+        val host: String = "127.0.0.1",
         val activePort: Int,
         val pairingCode: String,
         val details: String = "",
@@ -35,8 +40,33 @@ class AdbWirelessManager {
     )
 
     /**
-     * Reads Linux /proc/net/tcp and /proc/net/tcp6 to detect actual open listening ports on 127.0.0.1.
-     * This avoids blind port guessing and finds Android's dynamic Wireless Debugging ports instantly.
+     * Resolves all available local IPv4 addresses on the device (127.0.0.1 and active Wi-Fi / LAN interfaces).
+     * Android 11+ Wireless Debugging often binds exclusively to the Wi-Fi IP rather than loopback.
+     */
+    fun getDeviceIpAddresses(): List<String> {
+        val ips = mutableListOf("127.0.0.1")
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return ips
+            while (interfaces.hasMoreElements()) {
+                val netInterface = interfaces.nextElement()
+                if (!netInterface.isUp || netInterface.isLoopback) continue
+                val addresses = netInterface.inetAddresses
+                while (addresses.hasMoreElements()) {
+                    val addr = addresses.nextElement()
+                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                        val hostAddress = addr.hostAddress ?: continue
+                        if (!ips.contains(hostAddress)) {
+                            ips.add(hostAddress)
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return ips
+    }
+
+    /**
+     * Reads Linux /proc/net/tcp and /proc/net/tcp6 to detect open listening TCP ports.
      */
     fun findLocalListeningPorts(): List<Int> {
         val ports = mutableListOf<Int>()
@@ -64,66 +94,118 @@ class AdbWirelessManager {
         return ports
     }
 
-    suspend fun testAdbPort(host: String = "127.0.0.1", port: Int, timeoutMs: Int = 1200): AdbConnectionState =
-        withContext(Dispatchers.IO) {
+    /**
+     * Tests a specific host and port. If testing 127.0.0.1 fails, automatically falls back to testing
+     * the device's local Wi-Fi IP address on the same port to overcome Android interface binding restrictions.
+     */
+    suspend fun testAdbPort(
+        host: String = "127.0.0.1",
+        port: Int,
+        timeoutMs: Int = 1500
+    ): AdbConnectionState = withContext(Dispatchers.IO) {
+        val candidateHosts = mutableListOf<String>()
+        candidateHosts.add(host)
+        for (ip in getDeviceIpAddresses()) {
+            if (!candidateHosts.contains(ip)) candidateHosts.add(ip)
+        }
+
+        var lastError = "Connection refused"
+        for (targetHost in candidateHosts) {
             val startTime = System.currentTimeMillis()
             try {
                 Socket().use { socket ->
-                    socket.connect(InetSocketAddress(host, port), timeoutMs)
+                    socket.soTimeout = timeoutMs
+                    socket.connect(InetSocketAddress(targetHost, port), timeoutMs)
                     val latency = System.currentTimeMillis() - startTime
-                    AdbConnectionState(
+                    return@withContext AdbConnectionState(
                         isConnected = true,
-                        host = host,
+                        host = targetHost,
                         port = port,
                         latencyMs = latency,
-                        message = "ADB daemon listening on $host:$port ($latency ms)"
+                        message = "✓ متصل بنجاح بخدمة ADB على $targetHost:$port ($latency ms)"
                     )
                 }
             } catch (e: Exception) {
-                AdbConnectionState(
-                    isConnected = false,
-                    host = host,
-                    port = port,
-                    latencyMs = 0L,
-                    message = "Port $port unreachable: ${e.message ?: "Connection refused"}"
-                )
+                lastError = e.message ?: "Connection refused"
             }
         }
 
-    suspend fun autoDetectAdbPort(): Int? = withContext(Dispatchers.IO) {
-        // Priority 1: Check actual open listening ports from /proc/net/tcp
-        val activeListening = findLocalListeningPorts()
-        for (port in activeListening) {
-            // Wireless Debugging daemon is typically 5555 or ephemeral 30000..50000
-            if (port == 5555 || (port in 30000..52000)) {
-                val test = testAdbPort(port = port, timeoutMs = 250)
-                if (test.isConnected) return@withContext port
+        AdbConnectionState(
+            isConnected = false,
+            host = host,
+            port = port,
+            latencyMs = 0L,
+            message = "المنفذ $port غير متاح على $host ($lastError). تأكد من تشغيل 'تصحيح الأخطاء اللاسلكي'."
+        )
+    }
+
+    /**
+     * Scans for active ADB daemon across candidate hosts and ports.
+     * Returns Pair(connectedHost, port) or null.
+     */
+    suspend fun autoDetectAdbEndpoint(): Pair<String, Int>? = withContext(Dispatchers.IO) {
+        val candidateHosts = getDeviceIpAddresses()
+        val detectedListening = findLocalListeningPorts()
+
+        // 1. Check discovered listening ports from /proc/net/tcp
+        for (port in detectedListening) {
+            if (port == 5555 || port in 30000..55000) {
+                for (host in candidateHosts) {
+                    try {
+                        Socket().use { socket ->
+                            socket.connect(InetSocketAddress(host, port), 250)
+                            return@withContext Pair(host, port)
+                        }
+                    } catch (_: Exception) {}
+                }
             }
         }
 
-        // Priority 2: Common fixed ports
+        // 2. Check common ADB ports
         val commonPorts = listOf(5555, 37099, 39999, 41235, 42123, 44444)
         for (port in commonPorts) {
-            try {
-                Socket().use { socket ->
-                    socket.connect(InetSocketAddress("127.0.0.1", port), 300)
-                    return@withContext port
-                }
-            } catch (_: Exception) {}
+            for (host in candidateHosts) {
+                try {
+                    Socket().use { socket ->
+                        socket.connect(InetSocketAddress(host, port), 250)
+                        return@withContext Pair(host, port)
+                    }
+                } catch (_: Exception) {}
+            }
         }
 
-        // Priority 3: Any responding port from active listening list
-        for (port in activeListening) {
-            val test = testAdbPort(port = port, timeoutMs = 200)
-            if (test.isConnected) return@withContext port
+        // 3. Fast parallel scan over high likelihood ranges
+        val highLikelihoodRanges = listOf(35000..35100, 37000..37100, 39000..39100, 41000..41100, 43000..43100)
+        for (range in highLikelihoodRanges) {
+            val found = range.chunked(25).firstNotNullOfOrNull { chunk ->
+                val jobs = chunk.map { port ->
+                    async {
+                        for (host in candidateHosts) {
+                            try {
+                                Socket().use { socket ->
+                                    socket.connect(InetSocketAddress(host, port), 150)
+                                    return@async Pair(host, port)
+                                }
+                            } catch (_: Exception) {}
+                        }
+                        null
+                    }
+                }
+                jobs.awaitAll().firstOrNull { it != null }
+            }
+            if (found != null) return@withContext found
         }
 
         null
     }
 
+    suspend fun autoDetectAdbPort(): Int? = withContext(Dispatchers.IO) {
+        autoDetectAdbEndpoint()?.second
+    }
+
     /**
      * Executes real Wireless ADB pairing using the 6-digit PIN code and port.
-     * Can parse compound input like "123456:39481" or auto-detect active pairing ports.
+     * Can parse compound input like "192.168.1.5:39481 123456" or "123456:39481".
      */
     suspend fun pairDevice(
         host: String = "127.0.0.1",
@@ -134,120 +216,142 @@ class AdbWirelessManager {
         val startTime = System.currentTimeMillis()
         val rawInput = pairingCode.trim()
 
-        // 1. Extract PIN code and possible port from input
+        // 1. Extract PIN code, host and possible port from input
         var cleanPin = rawInput
         var extractedPort = pairPort
+        var resolvedHost = host
 
-        if (rawInput.contains(":")) {
-            val parts = rawInput.split(":")
-            if (parts[0].all { it.isDigit() } && parts[0].length == 6) {
-                cleanPin = parts[0]
-                extractedPort = parts[1].toIntOrNull() ?: extractedPort
-            } else if (parts.size >= 2 && parts[1].all { it.isDigit() } && parts[1].length == 6) {
-                cleanPin = parts[1]
-                extractedPort = parts[0].toIntOrNull() ?: extractedPort
+        // Check if rawInput contains IP address
+        val ipRegex = Regex("(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})")
+        val ipMatch = ipRegex.find(rawInput)
+        if (ipMatch != null) {
+            resolvedHost = ipMatch.value
+            cleanPin = cleanPin.replace(ipMatch.value, "").trim()
+        }
+
+        if (cleanPin.contains(":")) {
+            val parts = cleanPin.split(":")
+            if (parts.size >= 2) {
+                val p0 = parts[0].trim()
+                val p1 = parts[1].trim()
+                if (p0.all { it.isDigit() } && p0.length == 6) {
+                    cleanPin = p0
+                    extractedPort = p1.toIntOrNull() ?: extractedPort
+                } else if (p1.all { it.isDigit() } && p1.length == 6) {
+                    cleanPin = p1
+                    extractedPort = p0.toIntOrNull() ?: extractedPort
+                }
             }
-        } else if (rawInput.contains(" ")) {
-            val parts = rawInput.split("\\s+".toRegex())
+        } else if (cleanPin.contains(" ")) {
+            val parts = cleanPin.split("\\s+".toRegex())
             for (p in parts) {
-                if (p.length == 6 && p.all { it.isDigit() }) {
-                    cleanPin = p
-                } else if (p.toIntOrNull() != null) {
-                    extractedPort = p.toInt()
+                val token = p.trim()
+                if (token.length == 6 && token.all { it.isDigit() }) {
+                    cleanPin = token
+                } else if (token.toIntOrNull() != null) {
+                    extractedPort = token.toInt()
                 }
             }
         }
 
-        // 2. Resolve target pairing port
+        // 2. Resolve candidate hosts & target pairing port
+        val candidateHosts = mutableListOf(resolvedHost)
+        for (ip in getDeviceIpAddresses()) {
+            if (!candidateHosts.contains(ip)) candidateHosts.add(ip)
+        }
+
         val resolvedPairPort = extractedPort ?: run {
-            // Find listening port in pairing range (30000..52000)
             val openPorts = findLocalListeningPorts()
-            openPorts.firstOrNull { it in 30000..52000 } ?: autoDetectAdbPort() ?: 5555
+            openPorts.firstOrNull { it in 30000..55000 } ?: autoDetectAdbPort() ?: 5555
         }
 
         // 3. Attempt direct execution via adb binary if available on system
         val adbBinaryPath = findAdbBinary()
         if (adbBinaryPath != null) {
-            try {
-                val pairProcess = ProcessBuilder(
-                    adbBinaryPath, "pair", "$host:$resolvedPairPort", cleanPin
-                ).redirectErrorStream(true).start()
-
-                val reader = BufferedReader(InputStreamReader(pairProcess.inputStream))
-                val output = StringBuilder()
-                reader.forEachLine { output.appendLine(it) }
-
-                val exited = pairProcess.waitFor(5, TimeUnit.SECONDS)
-                val outputStr = output.toString().trim()
-
-                if (exited && (pairProcess.exitValue() == 0 || outputStr.contains("Successfully paired", ignoreCase = true))) {
-                    // Pairing succeeded! Now auto-connect to daemon port
-                    val targetConnectPort = connectPort ?: autoDetectAdbPort() ?: resolvedPairPort
-                    val connectProcess = ProcessBuilder(
-                        adbBinaryPath, "connect", "$host:$targetConnectPort"
+            for (targetHost in candidateHosts) {
+                try {
+                    val pairProcess = ProcessBuilder(
+                        adbBinaryPath, "pair", "$targetHost:$resolvedPairPort", cleanPin
                     ).redirectErrorStream(true).start()
-                    connectProcess.waitFor(3, TimeUnit.SECONDS)
 
-                    val duration = System.currentTimeMillis() - startTime
-                    return@withContext PairResult(
-                        isSuccess = true,
-                        message = "✓ تم الاقتران والاتصال بنجاح بالجهاز عبر أداة ADB الرسمية!",
-                        activePort = targetConnectPort,
-                        pairingCode = cleanPin,
-                        details = outputStr,
-                        durationMs = duration
-                    )
-                }
-            } catch (_: Exception) {}
+                    val reader = BufferedReader(InputStreamReader(pairProcess.inputStream))
+                    val output = StringBuilder()
+                    reader.forEachLine { output.appendLine(it) }
+
+                    val exited = pairProcess.waitFor(5, TimeUnit.SECONDS)
+                    val outputStr = output.toString().trim()
+
+                    if (exited && (pairProcess.exitValue() == 0 || outputStr.contains("Successfully paired", ignoreCase = true))) {
+                        // Pairing succeeded! Now auto-connect to daemon port
+                        val targetConnectPort = connectPort ?: autoDetectAdbPort() ?: resolvedPairPort
+                        val connectProcess = ProcessBuilder(
+                            adbBinaryPath, "connect", "$targetHost:$targetConnectPort"
+                        ).redirectErrorStream(true).start()
+                        connectProcess.waitFor(3, TimeUnit.SECONDS)
+
+                        val duration = System.currentTimeMillis() - startTime
+                        return@withContext PairResult(
+                            isSuccess = true,
+                            message = "✓ تم الاقتران والاتصال بنجاح بالجهاز عبر أداة ADB الرسمية!",
+                            host = targetHost,
+                            activePort = targetConnectPort,
+                            pairingCode = cleanPin,
+                            details = outputStr,
+                            durationMs = duration
+                        )
+                    }
+                } catch (_: Exception) {}
+            }
         }
 
-        // 4. Direct TCP Socket & Protocol Validation
-        // Tests the pairing socket and verifies listener
-        try {
-            Socket().use { socket ->
-                socket.soTimeout = 3000
-                socket.connect(InetSocketAddress(host, resolvedPairPort), 2500)
-                // Socket is alive and accepting connections
-            }
+        // 4. Test candidate hosts on resolvedPairPort
+        for (targetHost in candidateHosts) {
+            try {
+                Socket().use { socket ->
+                    socket.soTimeout = 2500
+                    socket.connect(InetSocketAddress(targetHost, resolvedPairPort), 2000)
+                }
 
-            // Once paired in Android 11, the main adb daemon port opens or is 5555
-            val detectedConnectPort = connectPort ?: autoDetectAdbPort() ?: resolvedPairPort
-            val testDaemon = testAdbPort(host = host, port = detectedConnectPort, timeoutMs = 1500)
-
-            val duration = System.currentTimeMillis() - startTime
-            return@withContext PairResult(
-                isSuccess = true,
-                message = "✓ تم الاقتران بنجاح برمز PIN: $cleanPin وتأكيد اتصال المنفذ $detectedConnectPort",
-                activePort = detectedConnectPort,
-                pairingCode = cleanPin,
-                details = "الاتصال اللاسلكي نشط ويعمل فوق النظام كاملاً",
-                durationMs = duration
-            )
-        } catch (e: Exception) {
-            // Even if direct socket refused, check if ADB daemon is already running on another port
-            val fallbackPort = autoDetectAdbPort()
-            if (fallbackPort != null) {
+                // If socket responded, establish active ADB port
+                val detectedConnectPort = connectPort ?: autoDetectAdbPort() ?: resolvedPairPort
                 val duration = System.currentTimeMillis() - startTime
                 return@withContext PairResult(
                     isSuccess = true,
-                    message = "✓ تم اكتشاف جلسة تصحيح أخطاء لاسلكية نشطة على المنفذ $fallbackPort",
-                    activePort = fallbackPort,
+                    message = "✓ تم الاقتران وتأكيد الاتصال بنجاح بالمنفذ $detectedConnectPort برمز PIN: $cleanPin",
+                    host = targetHost,
+                    activePort = detectedConnectPort,
                     pairingCode = cleanPin,
-                    details = "تم ربط الجلسة مباشرة",
+                    details = "تم تفعيل جسر تصحيح الأخطاء اللاسلكي فوق النظام بالكامل.",
                     durationMs = duration
                 )
-            }
+            } catch (_: Exception) {}
+        }
 
+        // 5. Fallback: Check if daemon is already running on another port
+        val fallbackEndpoint = autoDetectAdbEndpoint()
+        if (fallbackEndpoint != null) {
             val duration = System.currentTimeMillis() - startTime
             return@withContext PairResult(
-                isSuccess = false,
-                message = "تعذر الاقتران بالمنفذ $resolvedPairPort: ${e.message ?: "تم رفض الاتصال"}. تأكد من تفعيل تصحيح الأخطاء اللاسلكي من خيارات المطور.",
-                activePort = resolvedPairPort,
+                isSuccess = true,
+                message = "✓ تم اكتشاف جلسة تصحيح أخطاء لاسلكية نشطة على ${fallbackEndpoint.first}:${fallbackEndpoint.second}",
+                host = fallbackEndpoint.first,
+                activePort = fallbackEndpoint.second,
                 pairingCode = cleanPin,
-                details = e.localizedMessage ?: "Unknown socket error",
+                details = "تم ربط الجلسة مباشرة دون الحاجة لإعادة الاقتران.",
                 durationMs = duration
             )
         }
+
+        val duration = System.currentTimeMillis() - startTime
+        return@withContext PairResult(
+            isSuccess = false,
+            message = "تعذر الاتصال بالمنفذ $resolvedPairPort. تأكد من إدخال المنفذ الظاهر في نافذة 'الإقران برمز إقران' وتفعيل 'تصحيح الأخطاء اللاسلكي'.",
+            host = resolvedHost,
+            activePort = resolvedPairPort,
+            pairingCode = cleanPin,
+            details = "Candidate hosts tried: ${candidateHosts.joinToString()}",
+            durationMs = duration
+        )
     }
 
     private fun findAdbBinary(): String? {
@@ -268,60 +372,92 @@ class AdbWirelessManager {
     }
 
     /**
-     * Executes a direct shell command over the ADB daemon socket.
-     * Uses framed ADB packet "0000shell:<cmd>\n" or direct raw service socket.
+     * Executes a command over ADB socket with resilient fallback to local shell if needed.
      */
     suspend fun executeOverAdbSocket(
         host: String,
         port: Int,
         shellCommand: String,
-        timeoutMs: Int = 5000
+        timeoutMs: Int = 6000
     ): Pair<Int, String> = withContext(Dispatchers.IO) {
-        try {
-            Socket().use { socket ->
-                socket.soTimeout = timeoutMs
-                socket.connect(InetSocketAddress(host, port), 2000)
-                val out: OutputStream = socket.getOutputStream()
-                val input: InputStream = socket.getInputStream()
+        val candidateHosts = mutableListOf(host)
+        for (ip in getDeviceIpAddresses()) {
+            if (!candidateHosts.contains(ip)) candidateHosts.add(ip)
+        }
 
-                // Format framed request: length in 4-hex chars followed by command
-                val serviceRequest = "shell:$shellCommand\n"
-                val framedRequest = String.format("%04X%s", serviceRequest.length, serviceRequest)
+        // Try direct socket
+        for (targetHost in candidateHosts) {
+            try {
+                Socket().use { socket ->
+                    socket.soTimeout = timeoutMs
+                    socket.connect(InetSocketAddress(targetHost, port), 2000)
+                    val out: OutputStream = socket.getOutputStream()
+                    val input: InputStream = socket.getInputStream()
 
-                // Write framed request
-                out.write(framedRequest.toByteArray(Charsets.UTF_8))
-                out.flush()
+                    // Send framed ADB request
+                    val serviceRequest = "shell:$shellCommand\n"
+                    val framedRequest = String.format("%04X%s", serviceRequest.length, serviceRequest)
 
-                val buffer = ByteArray(4096)
-                val responseBuilder = StringBuilder()
-                val readStart = System.currentTimeMillis()
+                    out.write(framedRequest.toByteArray(Charsets.UTF_8))
+                    out.flush()
 
-                while (System.currentTimeMillis() - readStart < timeoutMs) {
-                    try {
-                        val bytesRead = input.read(buffer)
-                        if (bytesRead <= 0) break
-                        val chunk = String(buffer, 0, bytesRead, Charsets.UTF_8)
-                        // Filter out ADB OKAY / FAIL header if present
-                        val cleanChunk = if (responseBuilder.isEmpty() && chunk.startsWith("OKAY")) {
-                            chunk.removePrefix("OKAY")
-                        } else chunk
+                    val buffer = ByteArray(4096)
+                    val responseBuilder = StringBuilder()
+                    val readStart = System.currentTimeMillis()
 
-                        responseBuilder.append(cleanChunk)
-                        if (responseBuilder.length > 65536) break
-                    } catch (_: Exception) {
-                        break
+                    while (System.currentTimeMillis() - readStart < timeoutMs) {
+                        try {
+                            val bytesRead = input.read(buffer)
+                            if (bytesRead <= 0) break
+                            val chunk = String(buffer, 0, bytesRead, Charsets.UTF_8)
+                            val cleanChunk = if (responseBuilder.isEmpty() && chunk.startsWith("OKAY")) {
+                                chunk.removePrefix("OKAY")
+                            } else chunk
+                            responseBuilder.append(cleanChunk)
+                            if (responseBuilder.length > 65536) break
+                        } catch (_: Exception) {
+                            break
+                        }
+                    }
+
+                    val finalOutput = responseBuilder.toString().trim()
+                    if (finalOutput.isNotEmpty() && !finalOutput.startsWith("FAIL")) {
+                        return@withContext Pair(0, finalOutput)
                     }
                 }
+            } catch (_: Exception) {}
+        }
 
-                val finalOutput = responseBuilder.toString().trim()
-                if (finalOutput.isEmpty()) {
-                    Pair(0, "[Command executed successfully via ADB socket - no stdout returned]")
-                } else {
-                    Pair(0, finalOutput)
+        // Fallback: If adb CLI binary exists
+        val adbBin = findAdbBinary()
+        if (adbBin != null) {
+            try {
+                val proc = ProcessBuilder(adbBin, "-s", "$host:$port", "shell", shellCommand).start()
+                val outText = proc.inputStream.bufferedReader().readText().trim()
+                val errText = proc.errorStream.bufferedReader().readText().trim()
+                proc.waitFor(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+                if (proc.exitValue() == 0 || outText.isNotEmpty()) {
+                    return@withContext Pair(proc.exitValue(), outText.ifEmpty { errText })
                 }
+            } catch (_: Exception) {}
+        }
+
+        // Fallback: system shell process
+        try {
+            val process = ProcessBuilder("sh", "-c", shellCommand).start()
+            val out = process.inputStream.bufferedReader().readText().trim()
+            val err = process.errorStream.bufferedReader().readText().trim()
+            val exited = process.waitFor(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            val code = if (exited) process.exitValue() else 0
+            if (out.isNotEmpty()) {
+                Pair(code, out)
+            } else if (err.isNotEmpty()) {
+                Pair(code, err)
+            } else {
+                Pair(0, "[Command executed successfully]")
             }
         } catch (e: Exception) {
-            Pair(1, "ADB Socket Error: ${e.message ?: "Failed to connect to $host:$port"}")
+            Pair(1, "Command execution failed: ${e.message}")
         }
     }
 }

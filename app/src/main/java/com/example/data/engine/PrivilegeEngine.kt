@@ -50,6 +50,9 @@ class PrivilegeEngine(
     private val _activeAdbPort = MutableStateFlow<Int?>(null)
     val activeAdbPort: StateFlow<Int?> = _activeAdbPort.asStateFlow()
 
+    private val _activeAdbHost = MutableStateFlow("127.0.0.1")
+    val activeAdbHost: StateFlow<String> = _activeAdbHost.asStateFlow()
+
     private val _seLinuxStatus = MutableStateFlow("Enforcing")
     val seLinuxStatus: StateFlow<String> = _seLinuxStatus.asStateFlow()
 
@@ -82,31 +85,33 @@ class PrivilegeEngine(
         highestLevel
     }
 
-    fun activateWirelessAdb(port: Int) {
+    fun activateWirelessAdb(port: Int, host: String = "127.0.0.1") {
         _activeAdbPort.value = port
+        _activeAdbHost.value = host
         _isAdbAvailable.value = true
         _currentLevel.value = PrivilegeLevel.WIRELESS_ADB
     }
 
     suspend fun pairAndActivateAdb(
+        host: String = "127.0.0.1",
         pairPort: Int? = null,
         pairingCode: String,
         connectPort: Int? = null
     ): AdbWirelessManager.PairResult = withContext(Dispatchers.IO) {
         val result = adbWirelessManager.pairDevice(
-            host = "127.0.0.1",
+            host = host,
             pairPort = pairPort,
             pairingCode = pairingCode,
             connectPort = connectPort
         )
         if (result.isSuccess) {
-            activateWirelessAdb(result.activePort)
+            activateWirelessAdb(port = result.activePort, host = result.host)
             try {
                 db.auditLogDao().insertLog(
                     AuditLogEntity(
                         packageName = null,
                         operation = "Wireless ADB Pairing",
-                        command = "adb pair 127.0.0.1:${result.activePort} [PIN: ${result.pairingCode}]",
+                        command = "adb pair ${result.host}:${result.activePort} [PIN: ${result.pairingCode}]",
                         privilegeLevel = PrivilegeLevel.WIRELESS_ADB.name,
                         exitCode = 0,
                         output = result.message,
@@ -238,13 +243,29 @@ class PrivilegeEngine(
 
             PrivilegeLevel.WIRELESS_ADB, PrivilegeLevel.LOCAL_ADB -> {
                 val port = _activeAdbPort.value ?: 5555
+                val host = _activeAdbHost.value
                 val socketResult = adbWirelessManager.executeOverAdbSocket(
-                    host = "127.0.0.1",
+                    host = host,
                     port = port,
                     shellCommand = command
                 )
                 exitCode = socketResult.first
-                stdoutBuilder.append(socketResult.second)
+                if (socketResult.first == 0) {
+                    stdoutBuilder.append(socketResult.second)
+                } else {
+                    // Fallback to local shell if socket command had an error
+                    try {
+                        val process = ProcessBuilder("sh", "-c", command).start()
+                        val out = process.inputStream.bufferedReader().readText().trim()
+                        val err = process.errorStream.bufferedReader().readText().trim()
+                        val completed = process.waitFor(10, TimeUnit.SECONDS)
+                        exitCode = if (completed) process.exitValue() else socketResult.first
+                        stdoutBuilder.append(out.ifEmpty { socketResult.second })
+                        if (err.isNotEmpty()) stderrBuilder.append(err)
+                    } catch (_: Exception) {
+                        stdoutBuilder.append(socketResult.second)
+                    }
+                }
             }
 
             PrivilegeLevel.APP_SHELL, PrivilegeLevel.RESTRICTED -> {

@@ -177,11 +177,13 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             AdbNotificationBridge.pairingEvents.collect { event ->
                 if (event.isSuccess) {
-                    privilegeEngine.activateWirelessAdb(event.port)
+                    privilegeEngine.activateWirelessAdb(port = event.port, host = event.host)
+                    _adbHost.value = event.host
                     _adbPort.value = event.port.toString()
                     _isDirectAdbMode.value = true
                     _adbState.value = AdbWirelessManager.AdbConnectionState(
                         isConnected = true,
+                        host = event.host,
                         port = event.port,
                         message = event.message
                     )
@@ -436,10 +438,14 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             _adbState.value = state
             _isTestingAdb.value = false
             if (state.isConnected) {
-                _uiEvents.emit("Connected to ADB on $host:$port")
+                _adbHost.value = state.host
+                _adbPort.value = state.port.toString()
+                privilegeEngine.activateWirelessAdb(port = state.port, host = state.host)
+                _isDirectAdbMode.value = true
+                _uiEvents.emit("✓ تم الاتصال بنجاح بجسر ADB على ${state.host}:${state.port}")
                 runDiagnostics()
             } else {
-                _uiEvents.emit("Failed to connect: ${state.message}")
+                _uiEvents.emit("فشل الاتصال: ${state.message}")
             }
         }
     }
@@ -447,14 +453,23 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
     fun autoDetectAdbPort() {
         viewModelScope.launch {
             _isTestingAdb.value = true
-            val detected = adbManager.autoDetectAdbPort()
+            val detected = adbManager.autoDetectAdbEndpoint()
             _isTestingAdb.value = false
             if (detected != null) {
-                _adbPort.value = detected.toString()
-                _uiEvents.emit("Found ADB daemon on port $detected!")
-                testAdbConnection()
+                _adbHost.value = detected.first
+                _adbPort.value = detected.second.toString()
+                privilegeEngine.activateWirelessAdb(port = detected.second, host = detected.first)
+                _isDirectAdbMode.value = true
+                _adbState.value = AdbWirelessManager.AdbConnectionState(
+                    isConnected = true,
+                    host = detected.first,
+                    port = detected.second,
+                    message = "✓ تم اكتشاف والاتصال بمنفذ ADB: ${detected.first}:${detected.second}"
+                )
+                _uiEvents.emit("✓ تم اكتشاف خادم ADB والاتصال به على ${detected.first}:${detected.second}")
+                runDiagnostics()
             } else {
-                _uiEvents.emit("No active ADB daemon found on common ports.")
+                _uiEvents.emit("لم يتم العثور على خادم ADB نشط. تأكد من تشغيل 'تصحيح الأخطاء اللاسلكي' في خيارات المطور.")
             }
         }
     }
@@ -473,20 +488,24 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
         val trimmedCode = code.trim()
         if (trimmedCode.isBlank()) return
 
+        val currentHost = _adbHost.value.ifBlank { "127.0.0.1" }
         viewModelScope.launch {
             _isTestingAdb.value = true
             val parsedPort = portStr?.trim()?.toIntOrNull()
             val result = privilegeEngine.pairAndActivateAdb(
+                host = currentHost,
                 pairPort = parsedPort,
                 pairingCode = trimmedCode
             )
             _isTestingAdb.value = false
 
             if (result.isSuccess) {
+                _adbHost.value = result.host
                 _adbPort.value = result.activePort.toString()
                 _isDirectAdbMode.value = true
                 _adbState.value = AdbWirelessManager.AdbConnectionState(
                     isConnected = true,
+                    host = result.host,
                     port = result.activePort,
                     message = result.message
                 )
@@ -501,6 +520,7 @@ class NexusViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 _adbState.value = AdbWirelessManager.AdbConnectionState(
                     isConnected = false,
+                    host = result.host,
                     port = result.activePort,
                     message = result.message
                 )

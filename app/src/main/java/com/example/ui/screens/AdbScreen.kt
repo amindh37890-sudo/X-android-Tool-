@@ -80,8 +80,8 @@ fun AdbScreen(
 
     var pairCode by remember { mutableStateOf("") }
     var pairPort by remember { mutableStateOf("") }
-    var isPairing by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val deviceIps = remember { com.example.data.engine.AdbWirelessManager.default.getDeviceIpAddresses() }
 
     LazyColumn(
         modifier = modifier
@@ -152,13 +152,62 @@ fun AdbScreen(
             Spacer(modifier = Modifier.height(8.dp))
 
             CyberCard {
+                if (deviceIps.size > 1) {
+                    Text(
+                        text = "عناوين IP المتاحة على الجهاز (انقر للاختيار):",
+                        fontSize = 11.sp,
+                        color = NexusTextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        deviceIps.forEach { ip ->
+                            val isSelected = adbHost == ip
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (isSelected) NexusCyan.copy(alpha = 0.25f) else Color(0xFF142435),
+                                border = androidx.compose.foundation.BorderStroke(
+                                    1.dp,
+                                    if (isSelected) NexusCyan else NexusCardBorder
+                                ),
+                                modifier = Modifier
+                                    .testTag("ip_chip_$ip")
+                                    .weight(1f, fill = false),
+                                onClick = { viewModel.setAdbHost(ip) }
+                            ) {
+                                Text(
+                                    text = if (ip == "127.0.0.1") "Loopback ($ip)" else "Wi-Fi ($ip)",
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isSelected) NexusCyan else NexusTextPrimary,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     OutlinedTextField(
                         value = adbHost,
-                        onValueChange = { viewModel.setAdbHost(it) },
+                        onValueChange = { input ->
+                            if (input.contains(":")) {
+                                val parts = input.split(":")
+                                viewModel.setAdbHost(parts[0].trim())
+                                if (parts.size > 1 && parts[1].isNotBlank()) {
+                                    viewModel.setAdbPort(parts[1].trim())
+                                }
+                            } else {
+                                viewModel.setAdbHost(input)
+                            }
+                        },
                         label = { Text("Host", fontSize = 11.sp) },
                         modifier = Modifier.weight(1.3f),
                         singleLine = true,
@@ -173,7 +222,17 @@ fun AdbScreen(
 
                     OutlinedTextField(
                         value = adbPort,
-                        onValueChange = { viewModel.setAdbPort(it) },
+                        onValueChange = { input ->
+                            if (input.contains(":")) {
+                                val parts = input.split(":")
+                                viewModel.setAdbHost(parts[0].trim())
+                                if (parts.size > 1 && parts[1].isNotBlank()) {
+                                    viewModel.setAdbPort(parts[1].trim())
+                                }
+                            } else {
+                                viewModel.setAdbPort(input)
+                            }
+                        },
                         label = { Text("Port", fontSize = 11.sp) },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -348,7 +407,18 @@ fun AdbScreen(
                 ) {
                     OutlinedTextField(
                         value = pairPort,
-                        onValueChange = { pairPort = it },
+                        onValueChange = { input ->
+                            val trimmed = input.trim()
+                            if (trimmed.contains(":")) {
+                                val parts = trimmed.split(":")
+                                pairPort = parts[0].trim()
+                                if (parts.size > 1 && parts[1].length == 6) {
+                                    pairCode = parts[1].trim()
+                                }
+                            } else {
+                                pairPort = input
+                            }
+                        },
                         label = { Text("منفذ الإقران (اختياري/تلقائي)", fontSize = 11.sp) },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -364,7 +434,21 @@ fun AdbScreen(
 
                     OutlinedTextField(
                         value = pairCode,
-                        onValueChange = { pairCode = it },
+                        onValueChange = { input ->
+                            val trimmed = input.trim()
+                            if (trimmed.contains(" ") || trimmed.contains(":")) {
+                                val parts = trimmed.split("[:\\s]+".toRegex())
+                                for (p in parts) {
+                                    if (p.length == 6 && p.all { it.isDigit() }) {
+                                        pairCode = p
+                                    } else if (p.toIntOrNull() != null) {
+                                        pairPort = p
+                                    }
+                                }
+                            } else {
+                                pairCode = input
+                            }
+                        },
                         label = { Text("رمز PIN (6 أرقام)", fontSize = 11.sp) },
                         modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -384,12 +468,10 @@ fun AdbScreen(
                 Button(
                     onClick = {
                         if (pairCode.isNotBlank()) {
-                            isPairing = true
                             viewModel.pairDeviceWithCode(pairPort.ifBlank { null }, pairCode)
-                            isPairing = false
                         }
                     },
-                    enabled = pairCode.isNotBlank() && !isPairing && !isTesting,
+                    enabled = pairCode.isNotBlank() && !isTesting,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("pair_wireless_adb_btn"),
@@ -399,7 +481,7 @@ fun AdbScreen(
                     ),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    if (isPairing || isTesting) {
+                    if (isTesting) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(16.dp),
                             color = Color.White,

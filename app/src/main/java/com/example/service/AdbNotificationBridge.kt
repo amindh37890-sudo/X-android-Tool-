@@ -41,6 +41,7 @@ object AdbNotificationBridge {
         val isSuccess: Boolean,
         val pinCode: String,
         val port: Int,
+        val host: String = "127.0.0.1",
         val message: String
     )
 
@@ -246,6 +247,7 @@ class AdbNotificationReceiver : BroadcastReceiver() {
                                     isSuccess = true,
                                     pinCode = pinCode,
                                     port = pairResult.activePort,
+                                    host = pairResult.host,
                                     message = pairResult.message
                                 )
                             )
@@ -262,6 +264,7 @@ class AdbNotificationReceiver : BroadcastReceiver() {
                                     isSuccess = false,
                                     pinCode = pinCode,
                                     port = pairResult.activePort,
+                                    host = pairResult.host,
                                     message = pairResult.message
                                 )
                             )
